@@ -3,15 +3,14 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const axios = require('axios');
 const slugify = require('slugify');
-const http = require('http'); // Necessário para a nuvem não desligar o robô
+const http = require('http');
 
 puppeteer.use(StealthPlugin());
 
-// --- 1. MANTÉM O ROBÔ VIVO NA NUVEM ---
-// Cria um servidor simples para o Railway/Render saber que estamos online
+// --- SERVIDOR MANTÉM VIVO ---
 const server = http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('Robo SL Ativo e Operando!');
+    res.end('Robo SL Seguro Ativo');
 });
 server.listen(process.env.PORT || 8080);
 
@@ -40,16 +39,34 @@ async function uploadMediaToSanity(mediaUrl) {
 
 async function scrapeProductData(page, url) {
     try {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        // Aumentei o timeout e mudei a estratégia de espera
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
     } catch (e) { return null; }
 
     return await page.evaluate(() => {
-        const bodyText = document.body.innerText.toUpperCase();
-        const isOutOfStock = bodyText.includes('SEM ESTOQUE') || bodyText.includes('ESGOTADO') || bodyText.includes('INDISPONÍVEL');
+        // --- TRAVA DE SEGURANÇA 1: VERIFICAR SE É PÁGINA DE PRODUTO ---
+        // Se não tiver o elemento básico de produto, assume que é bloqueio
+        const isProductPage = document.querySelector('.product-view') || document.querySelector('.product-essential') || document.querySelector('h1');
+        if (!isProductPage) return { blocked: true };
 
-        let priceElement = document.querySelector('.special-price .price') || document.querySelector('.regular-price .price') || document.querySelector('.price-box .price:not(.old-price .price)');
+        const bodyText = document.body.innerText.toUpperCase();
+        
+        // Só marca como esgotado se tiver certeza absoluta
+        const isOutOfStock = bodyText.includes('SEM ESTOQUE') || 
+                             bodyText.includes('ESGOTADO') || 
+                             bodyText.includes('INDISPONÍVEL');
+
+        let priceElement = document.querySelector('.special-price .price') || 
+                           document.querySelector('.regular-price .price') || 
+                           document.querySelector('.price-box .price');
+                           
         let priceText = priceElement ? priceElement.innerText.trim() : '0';
         let rawPrice = parseFloat(priceText.replace(/[^\d,.]/g, '').replace(/\./g, '').replace(',', '.')) || 0;
+
+        // Se achou "Access Denied" ou preço zero, marca como suspeito
+        if (bodyText.includes('ACCESS DENIED') || bodyText.includes('FORBIDDEN') || rawPrice === 0) {
+            if (!isOutOfStock) return { blocked: true }; // Se preço é 0 e não está escrito esgotado, é erro/bloqueio
+        }
 
         let specificColor = 'Padrão';
         const colorRow = Array.from(document.querySelectorAll('#product-attribute-specs-table tr')).find(tr => tr.innerText.includes('Cor'));
@@ -72,7 +89,7 @@ async function scrapeProductData(page, url) {
         const variantLinks = [];
         document.querySelectorAll('#block-related .item a.product-image').forEach(el => variantLinks.push({ url: el.href }));
 
-        return { rawPrice, specificColor, mainImage, sizes, variantLinks, isOutOfStock };
+        return { rawPrice, specificColor, mainImage, sizes, variantLinks, isOutOfStock, blocked: false };
     });
 }
 
@@ -82,61 +99,77 @@ function calculatePrice(rawPrice) {
 
 // --- LÓGICA PRINCIPAL ---
 async function executarAtualizacao() {
-    console.log(`\n🔥 [${new Date().toLocaleString()}] INICIANDO CICLO DE ATUALIZAÇÃO SL...`);
+    console.log(`\n🔥 [${new Date().toLocaleString()}] INICIANDO CICLO SEGURO (SL)...`);
 
-    const query = `*[_type == "product" && defined(sourceUrl) && brand match "SL"]{ _id, title, sourceUrl, variants, price, isActive }`;
+    // Busca apenas produtos ATIVOS para não perder tempo com o que já morreu
+    const query = `*[_type == "product" && defined(sourceUrl) && brand match "SL" && isActive == true]{ _id, title, sourceUrl, variants, price, isActive }`;
     let sanityProducts = [];
     
     try {
         sanityProducts = await client.fetch(query);
-    } catch (e) { console.error("Erro ao conectar Sanity:", e.message); return; }
+    } catch (e) { console.error("Erro Sanity:", e.message); return; }
 
-   // BROWSER PARA NUVEM (Docker Otimizado)
     const browser = await puppeteer.launch({ 
         headless: "new",
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null, // Usa o Chrome do Docker se disponível
-        args: [
-            '--no-sandbox', 
-            '--disable-setuid-sandbox', 
-            '--disable-dev-shm-usage', 
-            '--single-process', 
-            '--no-zygote'
-        ]
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--single-process', '--no-zygote']
     });
     
     const page = await browser.newPage();
+    // Headers extras para parecer humano
+    await page.setExtraHTTPHeaders({
+        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+    });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
     for (const [index, product] of sanityProducts.entries()) {
         try {
             console.log(`Checking (${index+1}/${sanityProducts.length}): ${product.title}`);
             const mainData = await scrapeProductData(page, product.sourceUrl);
-            if (!mainData) continue;
+            
+            // --- PROTEÇÃO CONTRA BLOQUEIO ---
+            if (!mainData || mainData.blocked) {
+                console.log(`   ⚠️ LEITURA FALHOU (Provável bloqueio). Pulando produto para segurança.`);
+                await sleep(2000); // Espera um pouco para não forçar
+                continue; // NÃO DESATIVA, APENAS PULA
+            }
 
             const calculatedPrice = calculatePrice(mainData.rawPrice);
+            
+            // --- PROTEÇÃO DE PREÇO ZERO ---
             if (calculatedPrice <= 15) { 
-                await client.patch(product._id).set({ isActive: false }).commit();
+                // Se o preço for muito baixo, só desativa se o site disser explicitamente que está esgotado
+                if (mainData.isOutOfStock) {
+                    console.log(`   ⛔ Esgotado confirmado. Desativando.`);
+                    await client.patch(product._id).set({ isActive: false }).commit();
+                } else {
+                    console.log(`   ⚠️ Preço zerado mas não está 'Esgotado'. Ignorando erro de leitura.`);
+                }
                 continue;
             }
 
+            // Se chegou aqui, o preço é válido e a página carregou bem
             let siteInventory = {};
             if (mainData.sizes.length > 0) siteInventory[mainData.specificColor.toUpperCase()] = { sizes: mainData.sizes, imageUrl: mainData.mainImage };
 
-            // Verifica variantes (limitado a 3 para economizar CPU da nuvem)
-            for (const variantLink of mainData.variantLinks.slice(0, 3)) {
+            // Verifica variantes (limitado a 2 para ser rápido e discreto)
+            for (const variantLink of mainData.variantLinks.slice(0, 2)) {
                 if (variantLink.url === product.sourceUrl) continue;
                 const variantData = await scrapeProductData(page, variantLink.url);
-                if (variantData && variantData.sizes.length > 0) {
+                if (variantData && !variantData.blocked && variantData.sizes.length > 0) {
                     siteInventory[variantData.specificColor.toUpperCase()] = { sizes: variantData.sizes, imageUrl: variantData.mainImage };
                 }
-                await sleep(1000);
+                await sleep(1500); // Pausa maior entre requisições
             }
 
             if (Object.keys(siteInventory).length === 0) {
+                // Só desativa se acessou a página com sucesso e confirmou que está vazio
+                console.log(`   ⛔ Sem estoque em nenhuma cor. Desativando.`);
                 await client.patch(product._id).set({ isActive: false, variants: [] }).commit();
                 continue;
             }
 
+            // ... (Lógica de montagem igual ao anterior) ...
             let currentVariants = product.variants || [];
             let newSanityVariants = [];
 
@@ -165,8 +198,9 @@ async function executarAtualizacao() {
             }
 
             await client.patch(product._id).set({ variants: newSanityVariants, price: calculatedPrice, isActive: true }).commit();
+            console.log("   ✅ Atualizado.");
             
-        } catch (err) { console.error(`Erro no produto ${product.title}: ${err.message}`); }
+        } catch (err) { console.error(`Erro processando ${product.title}: ${err.message}`); }
     }
 
     await browser.close();
@@ -174,13 +208,9 @@ async function executarAtualizacao() {
 }
 
 // --- LOOP ETERNO ---
-// Roda imediatamente ao ligar
 executarAtualizacao();
-
-// Roda a cada 24 horas (em milissegundos)
 const INTERVALO_24H = 24 * 60 * 60 * 1000;
 setInterval(() => {
     executarAtualizacao();
 }, INTERVALO_24H);
-
-console.log("⏳ SISTEMA DE LOOP INICIADO: Rodando a cada 24h.");
+console.log("⏳ MODO SEGURO ATIVADO: Monitorando a cada 24h.");
