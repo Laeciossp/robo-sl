@@ -1,0 +1,20 @@
+{
+  "name": "robo-sl-nuvem",
+  "version": "1.0.0",
+  "description": "Atualizador Automatico SL",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@sanity/client": "^6.0.0",
+    "puppeteer": "^21.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "axios": "^1.6.0",
+    "slugify": "^1.6.6"
+  },
+  "engines": {
+    "node": "18.x"
+  }
+}
