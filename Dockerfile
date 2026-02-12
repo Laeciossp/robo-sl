@@ -1,15 +1,22 @@
-# Usa uma imagem pronta que já tem Puppeteer e Chrome configurados
+# Usa a imagem oficial que JÁ TEM o Chrome instalado
 FROM ghcr.io/puppeteer/puppeteer:latest
 
 # Define o diretório de trabalho
 WORKDIR /usr/src/app
 
-# Copia os arquivos do projeto
+# --- O PULO DO GATO ---
+# Avisa o instalador para NÃO baixar o Chrome de novo
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
+
+# Copia os arquivos de configuração primeiro
 COPY package*.json ./
+
+# Instala só as bibliotecas leves (vai ser muito rápido agora)
+RUN npm ci
+
+# Copia o resto do código
 COPY index.js ./
 
-# Instala as dependências do projeto
-RUN npm install
-
-# Comando para iniciar o robô
+# Inicia o robô
 CMD [ "node", "index.js" ]

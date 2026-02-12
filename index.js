@@ -91,10 +91,17 @@ async function executarAtualizacao() {
         sanityProducts = await client.fetch(query);
     } catch (e) { console.error("Erro ao conectar Sanity:", e.message); return; }
 
-    // BROWSER PARA NUVEM (Headless e Sem Sandbox)
+   // BROWSER PARA NUVEM (Docker Otimizado)
     const browser = await puppeteer.launch({ 
         headless: "new",
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--single-process', '--no-zygote']
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null, // Usa o Chrome do Docker se disponível
+        args: [
+            '--no-sandbox', 
+            '--disable-setuid-sandbox', 
+            '--disable-dev-shm-usage', 
+            '--single-process', 
+            '--no-zygote'
+        ]
     });
     
     const page = await browser.newPage();
