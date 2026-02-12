@@ -1,21 +1,17 @@
-# Usa a imagem oficial que JÁ TEM o Chrome instalado
+# Usa a imagem oficial (que já tem Chrome e sabe onde ele está)
 FROM ghcr.io/puppeteer/puppeteer:latest
 
 # Define o diretório de trabalho
 WORKDIR /usr/src/app
 
-# Avisa o instalador para NÃO baixar o Chrome de novo (usa o do sistema)
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
-
 # Copia os arquivos de configuração
 COPY package*.json ./
 
-# --- CORREÇÃO AQUI ---
-# Usamos 'npm install' em vez de 'npm ci'
+# Instala as dependências do projeto
+# (A imagem já pula o download do Chrome automaticamente, não precisa forçar)
 RUN npm install
 
-# Copia o resto do código
+# Copia o código do robô
 COPY index.js ./
 
 # Inicia o robô
